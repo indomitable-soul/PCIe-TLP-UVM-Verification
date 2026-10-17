@@ -1,58 +1,77 @@
-# PCIe Transaction Layer Packet (TLP) Generator & UVM Verification Environment
+# PCIe TLP Generator & UVM Verification Environment
 
-A complete SystemVerilog/UVM verification environment designed to generate, drive, and verify PCI Express (PCIe) Transaction Layer Packets (TLPs). The testbench verifies protocol compliance, corner-case addressing boundaries, payload limits, and achieves 100% functional coverage using a combination of constrained-random verification (CRV) and directed sequences.
+A SystemVerilog/UVM testbench that generates constrained-random PCIe Transaction Layer Packets (memory read, memory write, completion, completion with data) and checks every header field against an independent golden reference model. It currently runs in loopback (driver -> interface -> monitor), without a DUT.
 
+## Key results
 
+- **Golden model validated** against hand-computed headers for MWr (3DW), MRd (4DW), CplD and Cpl before it judges any traffic.
+- **Checker proven to fail:** an error-injection test flips one header bit in every 7th packet, and the scoreboard caught **42 of 42** corruptions (`PASS=258 FAIL=42`).
+- **Coverage closure:** constrained-random alone reached **87.09% to 96.77%** over seeds 1 to 10 (about 92% on average). Adding directed corner sequences brought functional coverage to **100% on all 10 seeds**.
+- **Clean regression:** 640 packets (corner test) and 300 packets (random test) per seed, 0 UVM_ERROR and 0 UVM_FATAL.
 
-## Architecture Overview
+## Architecture
 
-The verification environment follows standard UVM component hierarchy:
+```
+Sequence -> Sequencer -> Driver -> pcie_if (loopback) -> Monitor
+                           |                                |
+                      item sent                       item observed
+                           v                                v
+                    Scoreboard: golden model -> expected  vs  observed
+                                                            Monitor -> Coverage
+```
 
-- **Agent (pcie_agent)**: Encapsulates the driver, monitor, and sequencer for modular reuse.
-- **Driver (pcie_driver)**: Converts high-level sequence items into cycle-accurate interface pin toggles supporting pipeline handshakes (valid/ready).
-- **Monitor (pcie_monitor)**: Samples pin-level interface transactions and broadcasts observed TLPs via analysis ports.
-- **Scoreboard (pcie_scoreboard)**: Validates transmitted vs. received packets end-to-end to ensure data integrity and protocol compliance.
-- **Reference Model (pcie_ref_model)**: Predicts expected responses and completion status for iCoverage Collector (pcie_coverage)or (pcie_coverage)**: Tracks functional coverage bins across packet types, length buckets, and byte-enable combinations.
+- **pcie_tlp:** sequence item with the TLP fields, legality constraints and header packing.
+- **pcie_driver / pcie_monitor:** drive and sample a valid/ready, sop/eop interface, one DW per beat. The monitor decodes only from wire values.
+- **pcie_ref_model:** golden encoder written separately from the driver's packing, producing expected raw header DWs and fields.
+- **pcie_scoreboard:** compares raw header DWs, decoded fields and payload for each packet.
+- **pcie_coverage:** functional covergroup over kind, length, 3DW/4DW, byte enables and 4KB offset.
 
+Packing (driver), decoding (monitor) and encoding (golden model) are three independent implementations, so a bug in one cannot hide on both sides of the comparison.
 
+## Supported TLPs and legality rules
 
-## Supported TransacTLP Kindsres
+- MRd, MWr, Cpl, CplD, with 32-bit (3DW) and 64-bit (4DW) addressing
+- 4KB boundary rule: `(addr[11:0] + length_dw * 4) <= 4096`
+- Max payload / max read request limits, and the 1024-DW length encoded as 0
+- Legal first/last byte-enable combinations, including single-DW rules
 
-- **TLP Kinds**: Memory Reads (MRd), Memory Writes (MWr), Completions (Cpl), and Completions with Data (CplD).
-- **Addressing**: 32-bit (3-DW header) and 64-bit (4-DW hPCIe Constraints & Corner Casestraint4 KB Address Boundary Checksddress Boundary Checks**: Guarantees transactions do not cross 4 KB physical page boundaries ((addr[11:0] + length_dw * 4) <= 4096).
-  - **Max Payload Size (MPS)**: Payload saturation and enforcement up to1024-DW Encodinges.
-  - **1024-DW Encoding**: Verifies proper 10-bit zero-encoding (10'b00_0000_0000) for Byte-Enable Matrix.
-  - **Byte-Enable Matrix**: Comprehensive sweeping of First Byte Enable (FBE) and Last Byte Enable (LBE) patterns.
+## Tests
 
+| Test | Purpose |
+|---|---|
+| `pcie_golden_unit_test` | Golden model and header packing vs hand-computed headers |
+| `pcie_rand_test` | Weighted constrained-random mix |
+| `pcie_corner_test` | Directed corners (4KB edge, max length, byte-enable sweep, completion lengths), then random |
+| `pcie_neg_test` | Error injection; checker must catch every corrupted packet |
 
+## Results
 
-## Coverage & Regression Results
+| Test | Seeds | Packets / seed | Errors / Fatals | Functional coverage |
+|---|---|---|---|---|
+| pcie_corner_test | 1 to 10 | 640 | 0 / 0 | **100%** on every seed |
+| pcie_rand_test | 1 to 10 | 300 | 0 / 0 | 87.09% to 96.77% |
+| pcie_neg_test | default | 300 | 0 / 0 | 42 of 42 injected errors caught |
 
-Functional coverage was measured across multiple random seeds using Synopsys VCS.
+![Corner test](results/04_corner_test_coverage.png)
+![Negative test](results/05_negative_test.png)
+![Waveform](results/06_waveform_tlp.png)
 
-| Test Case | Seeds Tested | Transactions / Seed | Error / Fatal Count | Functional Coverage |
-| :--- | :--- | :--- | :--- | :--- |
-| pcie_corner_test | S100.00% | 640 | 0 / 0 | **100.00%** |
-| pcie_rand_test | Seeds 1 – 10 | 300 | 0 / 0 | 87.09% – 96.77% |
+Why random alone falls short: the 4KB-edge offsets, single-DW byte-enable values and short completions are statistically rare, which is what the directed sequences target.
 
-### Coverage Closure Strategy
-Purely random stimulus (pcie_rand_test) left coverage holes (averaging 90–95%) due to the low statistical probability of hitting rare protocol corners (such as single-DW completions and exact 4KB boundaries). Developing targeted, directed sequences (pcie_edge_4k_seq, pcie_max_len_seq, pcie_be_sweep_seq, and pcie_cpl_len_seq) closed every cross-coverage bin (x_kind_len, cp_fbe, cp_off), achieving **100% deterministic coverage** across all regression seeds.
+## How to run (EDA Playground)
 
+- Testbench + Design: SystemVerilog/Verilog, UVM 1.2, Synopsys VCS
+- `design.sv` holds the interface; `testbench.sv` holds `tb_top`; the remaining files are included by `pcie_pkg.sv`
+- Compile options: `-timescale=1ns/1ps -cm group`
+- Run options: `+UVM_TESTNAME=pcie_corner_test +ntb_random_seed=1 -cm group`
 
+## Limitations and next steps
 
-## Directory Structure
+- Loopback only: "observed" means what the monitor sees on the interface, not DUT output
+- Completions are single and unsplit; no RCB splitting yet
+- No memory model, tag tracking or ordering checks yet
+- Next: completion splitting, memory model, tag pool, more error injection, SVA, DUT integration
 
-`text
-├── design.sv             # Target DUT / loopback interface model
-├── testbench.sv          # Top-level testbench module and clock/reset generation
-├── pcie_pkg.sv           # Package aggregating all components and sequences
-├── pcie_tlp.sv           # Base UVM sequence item defining TLP fields & constraints
-├── pcie_seqs.sv          # Constrained-random and corner-case directed sequences
-├── pcie_driver.sv        # Pin-level driver
-├── pcie_monitor.sv       # Bus monitor and analysis port broadcaster
-├── pcie_agent.sv         # UVM Agent
-├── pcie_coverage.sv      # Functional covergroups and cross coverage
-├── pcie_scoreboard.sv    # Transaction checker and scoreboard
-├── pcie_ref_model.sv     # Transaction prediction reference model
-├── pcie_env.sv           # UVM Environment connecting agent and subscribers
-└── pcie_tests.sv         # Test library containing base and corner test cases
+## Reference
+
+PCI Express Base Specification, Transaction Layer chapter. No specification text or figures are reproduced here.
