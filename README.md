@@ -48,7 +48,7 @@ Packing (driver), decoding (monitor) and encoding (golden model) are three indep
 
 | Test | Seeds | Packets / seed | Errors / Fatals | Functional coverage |
 |---|---|---|---|---|
-| pcie_corner_test | 1 to 10 | 640 | 0 / 0 | **100%** on every seed |
+| pcie_corner_test | 1 to 10 | 1040 | 0 / 0 | **100%** on every seed |
 | pcie_rand_test | 1 to 10 | 300 | 0 / 0 | 87.09% to 96.77% |
 | pcie_neg_test | default | 300 | 0 / 0 | 42 of 42 injected errors caught |
 
